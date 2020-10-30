@@ -38,6 +38,12 @@ static char Enc[512] = {0};
 static char Hash[252] = {0};
 static char Mac[252] = {0};
 static char Mac_calculate[772] = {0};
+static char previous_Hash[252] = {0};
+static char calculate_Hash[252] = {0};
+
+char *IKSW = "gv4rrcQoL3PWZG8V";
+char *KSW = "uaRNrZKutHtZoplz";
+char *IV = "s0fGiJWHN5FLmdd9";
 
 #define index_offset 0
 #define index_length 8
@@ -86,7 +92,7 @@ static void print_sha256(const uint8_t *image_hash, const char *label)
 static void hmac_256(const char *payload, const int payloadLength, char *output)
 {
 
-    char *key = "secretKey";
+    //char *IKSW = "secretKey";
     //char *payload = "Hello HMAC SHA 256!";
     unsigned char hmacResult[32];
 
@@ -94,11 +100,11 @@ static void hmac_256(const char *payload, const int payloadLength, char *output)
     mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
 
     //const size_t payloadLength = strlen(payload);
-    const size_t keyLength = strlen(key);
+    const size_t keyLength = strlen(IKSW);
 
     mbedtls_md_init(&ctx);
     mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
-    mbedtls_md_hmac_starts(&ctx, (const unsigned char *)key, keyLength);
+    mbedtls_md_hmac_starts(&ctx, (const unsigned char *)IKSW, keyLength);
     mbedtls_md_hmac_update(&ctx, (const unsigned char *)payload, payloadLength);
     mbedtls_md_hmac_finish(&ctx, hmacResult);
     mbedtls_md_free(&ctx);
@@ -110,9 +116,58 @@ static void hmac_256(const char *payload, const int payloadLength, char *output)
         char str[3];
 
         sprintf(str, "%02x", (int)hmacResult[i]);
-        ESP_LOGI(TAG, "Hash is: %s", str);
+        ESP_LOGI(TAG, "Hmac is: %s", str);
     }
     //ESP_LOGI( TAG,"Hash is:");
+}
+
+
+static void hash_256(const char *payload, const int payloadLength, char *output)
+{
+    unsigned char shaResult[32];
+
+    mbedtls_md_context_t ctx;
+    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
+
+   
+    const size_t payloadLength = strlen(payload);    
+
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
+    mbedtls_md_starts(&ctx);
+    mbedtls_md_update(&ctx, (const unsigned char *) payload, payloadLength);
+    mbedtls_md_finish(&ctx, shaResult);
+    mbedtls_md_free(&ctx);
+
+    strncpy(output, (char *)shaResult, 32);
+
+    for (int i = 0; i < 32; i++)
+    {
+        char str[3];
+
+        sprintf(str, "%02x", (int)shaResult[i]);
+        ESP_LOGI(TAG, "Hash is: %s", str);
+    }
+
+}
+
+
+static void decrypt_symmetric(const char *input, const char *iv,const int inputlength, char *output)
+{
+    mbedtls_gcm_init( &aes );
+    mbedtls_gcm_setkey( &aes, MBEDTLS_CIPHER_ID_AES , (const unsigned char*) KSW, strlen(KSW) * 8);
+    mbedtls_gcm_starts(&aes, MBEDTLS_GCM_DECRYPT, (const unsigned char*)iv, strlen(iv), NULL, 0);
+    mbedtls_gcm_update(&aes,64,(const unsigned char*)input, output);
+    mbedtls_gcm_free( &aes );
+ 
+    for (int i = 0; i < 16; i++) {
+ 
+        char str[3];
+ 
+         sprintf(str, "%02x", (int)output[i]);
+         ESP_LOGI(TAG, "Decrypted value is: %s", str);
+        
+  }
 }
 
 static void infinite_loop(void)
@@ -201,6 +256,7 @@ static void ota_example_task(void *pvParameter)
 
     int j = 0;
     int N = 144;
+    char *h0 = "hash of first chunk";
     while (1)
     {
         int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
@@ -223,9 +279,44 @@ static void ota_example_task(void *pvParameter)
             char hmac[32];
 
             hmac_256(ota_write_data, 772, hmac);
+
+            char hash[32];
             if (hmac == Mac_calculate)
             {
-                //store ota_write_data in memory
+                if ( (int)indexx == 0) {
+                    //check if the hashes are equal
+                    hash_256(ota_write_data, 772, hash);
+                    
+                    if (hash == h0){
+                         //decrypt E0 with KSW
+                         //store ota_write_data in memory
+
+                    }else
+                    {
+                        //request retransmition of first chunk
+                    }
+                    
+                    previous_Hash = Hash ; 
+                } 
+                else
+                {
+                    hash_256(ota_write_data, 772, hash);
+                    if (hash == previous_Hash)
+                    { 
+                        //decrypt En with KSW
+                        //store ota_write_data in memory
+
+                        
+                    }else
+                    {
+                        //request retransmition of the related chunk
+                    }
+                    previous_Hash = Hash ; 
+                    
+                    
+                }
+                
+               
 
                 if (image_header_was_checked == false)
                 {
@@ -323,12 +414,12 @@ static void ota_example_task(void *pvParameter)
         }
     }
 
-    int i = 0;
-    while (1)
-    {
-        char tmpBuffer [1024] = 0;
-        esp_err_t status = esp_partition_read(update_partition, OffsetAdress, tmpBuffer, 1024);
-    }
+    //int i = 0;
+    //while (1)
+    //{
+    //    char tmpBuffer [1024] = 0;
+    //    esp_err_t status = esp_partition_read(update_partition, OffsetAdress, tmpBuffer, 1024);
+    //}
 
     ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
     if (esp_http_client_is_complete_data_received(client) != true)
@@ -455,3 +546,4 @@ void app_main(void)
 
     xTaskCreate(&ota_example_task, "ota_example_task", 8192, NULL, 5, NULL);
 }
+
