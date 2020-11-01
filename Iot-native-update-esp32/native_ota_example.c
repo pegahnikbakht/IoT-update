@@ -22,6 +22,7 @@
 #include "protocol_examples_common.h"
 #include "errno.h"
 #include "mbedtls/md.h"
+#include "mbedtls/gcm.h"
 
 #if CONFIG_EXAMPLE_CONNECT_WIFI
 #include "esp_wifi.h"
@@ -89,7 +90,7 @@ static void print_sha256(const uint8_t *image_hash, const char *label)
     ESP_LOGI(TAG, "%s: %s", label, hash_print);
 }
 
-static void hmac_256(const char *payload, const int payloadLength, char *output)
+static void hmac_256(const char *payload, int payloadLength, char *output)
 {
 
     //char *IKSW = "secretKey";
@@ -111,18 +112,12 @@ static void hmac_256(const char *payload, const int payloadLength, char *output)
 
     strncpy(output, (char *)hmacResult, 32);
 
-    for (int i = 0; i < 32; i++)
-    {
-        char str[3];
+    ESP_LOG_BUFFER_HEX("HMAC_256", hmacResult, 32);
 
-        sprintf(str, "%02x", (int)hmacResult[i]);
-        ESP_LOGI(TAG, "Hmac is: %s", str);
-    }
-    //ESP_LOGI( TAG,"Hash is:");
 }
 
 
-static void hash_256(const char *payload, const int payloadLength, char *output)
+static void hash_256(const char *payload, int payloadLength, char *output)
 {
     unsigned char shaResult[32];
 
@@ -130,10 +125,10 @@ static void hash_256(const char *payload, const int payloadLength, char *output)
     mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
 
    
-    const size_t payloadLength = strlen(payload);    
+    //const size_t payloadLength = strlen(payload);    
 
     mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 0);
     mbedtls_md_starts(&ctx);
     mbedtls_md_update(&ctx, (const unsigned char *) payload, payloadLength);
     mbedtls_md_finish(&ctx, shaResult);
@@ -141,23 +136,19 @@ static void hash_256(const char *payload, const int payloadLength, char *output)
 
     strncpy(output, (char *)shaResult, 32);
 
-    for (int i = 0; i < 32; i++)
-    {
-        char str[3];
-
-        sprintf(str, "%02x", (int)shaResult[i]);
-        ESP_LOGI(TAG, "Hash is: %s", str);
-    }
+    ESP_LOG_BUFFER_HEX("HASH_256", shaResult, 32);
+  
 
 }
 
 
 static void decrypt_symmetric(const char *input, const char *iv,const int inputlength, char *output)
 {
+    mbedtls_gcm_context aes;
     mbedtls_gcm_init( &aes );
     mbedtls_gcm_setkey( &aes, MBEDTLS_CIPHER_ID_AES , (const unsigned char*) KSW, strlen(KSW) * 8);
     mbedtls_gcm_starts(&aes, MBEDTLS_GCM_DECRYPT, (const unsigned char*)iv, strlen(iv), NULL, 0);
-    mbedtls_gcm_update(&aes,64,(const unsigned char*)input, output);
+    mbedtls_gcm_update(&aes,64,(const unsigned char*)input, (unsigned char*)output);
     mbedtls_gcm_free( &aes );
  
     for (int i = 0; i < 16; i++) {
@@ -296,7 +287,7 @@ static void ota_example_task(void *pvParameter)
                         //request retransmition of first chunk
                     }
                     
-                    previous_Hash = Hash ; 
+                    memcpy(previous_Hash,Hash,252);
                 } 
                 else
                 {
@@ -311,7 +302,7 @@ static void ota_example_task(void *pvParameter)
                     {
                         //request retransmition of the related chunk
                     }
-                    previous_Hash = Hash ; 
+                     memcpy(previous_Hash,Hash,252);
                     
                     
                 }
@@ -474,6 +465,26 @@ static bool diagnostic(void)
 
 void app_main(void)
 {
+
+
+    // TEST SECTION
+    //char *IKSW = "secretKey";
+    char *payload = "Hello HMAC SHA 256!";
+    char output[32] = {0};
+    hmac_256(payload, 19, output);
+
+    hash_256(payload, 19, output);
+
+
+    while(1);
+    // TEST SECTION
+
+
+
+
+
+
+
     uint8_t sha_256[HASH_LEN] = {0};
     esp_partition_t partition;
 
