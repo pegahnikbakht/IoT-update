@@ -219,7 +219,16 @@ static void ota_example_task(void *pvParameter)
     config.skip_cert_common_name_check = true;
 #endif
 
+//start retransit  section
     esp_http_client_handle_t client = esp_http_client_init(&config);
+
+    /*sample
+    //index 4 failed!
+    //Range = (index * 1024)- fileSize
+    unsigned char ByteRange[20]={0};
+    sprintf(ByteRange, "bytes=%d-%d",(index * 1024), fileSize);
+    esp_http_client_set_header(client, "Range: ", ByteRange);
+*/
     if (client == NULL)
     {
         ESP_LOGE(TAG, "Failed to initialise HTTP connection");
@@ -233,6 +242,7 @@ static void ota_example_task(void *pvParameter)
         task_fatal_error();
     }
     esp_http_client_fetch_headers(client);
+// end retransit section
 
     update_partition = esp_ota_get_next_update_partition(NULL);
     ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%x",
