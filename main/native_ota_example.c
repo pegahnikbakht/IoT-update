@@ -142,23 +142,22 @@ static void hash_256(const char *payload, int payloadLength, char *output)
 }
 
 
-static void decrypt_symmetric(const char *input, const char *iv,const int inputlength, char *output)
+static void decrypt_symmetric(unsigned char *input, char *iv, unsigned char *output)
 {
     mbedtls_gcm_context aes;
     mbedtls_gcm_init( &aes );
     mbedtls_gcm_setkey( &aes, MBEDTLS_CIPHER_ID_AES , (const unsigned char*) KSW, strlen(KSW) * 8);
     mbedtls_gcm_starts(&aes, MBEDTLS_GCM_DECRYPT, (const unsigned char*)iv, strlen(iv), NULL, 0);
-    mbedtls_gcm_update(&aes,64,(const unsigned char*)input, (unsigned char*)output);
+    mbedtls_gcm_update(&aes,64,(const unsigned char*)input, output);
     mbedtls_gcm_free( &aes );
- 
-    for (int i = 0; i < 16; i++) {
- 
+    
+    for (int i = 0; i < 20; i++)
+    {
         char str[3];
- 
-         sprintf(str, "%02x", (int)output[i]);
-         ESP_LOGI(TAG, "Decrypted value is: %s", str);
-        
-  }
+        sprintf(str, "%c", (int)output[i]);
+        ESP_LOGI(TAG, "Decrypted value is: %s", str);
+    }
+    //ESP_LOGI(TAG, "Decrypted data is: %02x", (int)output);
 }
 
 static void infinite_loop(void)
@@ -285,6 +284,8 @@ static void ota_example_task(void *pvParameter)
                     }else
                     {
                         //request retransmition of first chunk
+                        ESP_LOGI(TAG, "Request retransmition of first chunk");
+                        http_cleanup(client);
                     }
                     
                     memcpy(previous_Hash,Hash,252);
@@ -301,6 +302,8 @@ static void ota_example_task(void *pvParameter)
                     }else
                     {
                         //request retransmition of the related chunk
+                        ESP_LOGI(TAG, "Request retransmition of other chunks");
+                        http_cleanup(client);
                     }
                      memcpy(previous_Hash,Hash,252);
                     
@@ -470,10 +473,13 @@ void app_main(void)
     // TEST SECTION
     //char *IKSW = "secretKey";
     char *payload = "Hello HMAC SHA 256!";
-    char output[32] = {0};
-    hmac_256(payload, 19, output);
+    //char output[32] = {0};
+    //hmac_256(payload, 19, output);
 
-    hash_256(payload, 19, output);
+    //hash_256(payload, 19, output);
+    unsigned char output[64] = {0};
+    unsigned char input[] = {0xcd,0x3f,0xe2,0x36,0xad,0x00,0xa9,0xfa,0x30,0xbf,0x33,0x78,0xc4,0x12,0x07,0xb9,0xf7,0x10,0x04};
+    decrypt_symmetric(input, IV, output);
 
 
     while(1);
