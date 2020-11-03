@@ -40,7 +40,7 @@ static char Hash[252] = {0};
 static char Mac[252] = {0};
 static char Mac_calculate[772] = {0};
 static char previous_Hash[252] = {0};
-static char calculate_Hash[252] = {0};
+//static char calculate_Hash[252] = {0};
 
 char *IKSW = "gv4rrcQoL3PWZG8V";
 char *KSW = "uaRNrZKutHtZoplz";
@@ -93,14 +93,11 @@ static void print_sha256(const uint8_t *image_hash, const char *label)
 static void hmac_256(const char *payload, int payloadLength, char *output)
 {
 
-    //char *IKSW = "secretKey";
-    //char *payload = "Hello HMAC SHA 256!";
     unsigned char hmacResult[32];
 
     mbedtls_md_context_t ctx;
     mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
 
-    //const size_t payloadLength = strlen(payload);
     const size_t keyLength = strlen(IKSW);
 
     mbedtls_md_init(&ctx);
@@ -123,9 +120,7 @@ static void hash_256(const char *payload, int payloadLength, char *output)
 
     mbedtls_md_context_t ctx;
     mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
-
-   
-    //const size_t payloadLength = strlen(payload);    
+    
 
     mbedtls_md_init(&ctx);
     mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 0);
@@ -219,16 +214,8 @@ static void ota_example_task(void *pvParameter)
     config.skip_cert_common_name_check = true;
 #endif
 
-//start retransit  section
     esp_http_client_handle_t client = esp_http_client_init(&config);
 
-    /*sample
-    //index 4 failed!
-    //Range = (index * 1024)- fileSize
-    unsigned char ByteRange[20]={0};
-    sprintf(ByteRange, "bytes=%d-%d",(index * 1024), fileSize);
-    esp_http_client_set_header(client, "Range: ", ByteRange);
-*/
     if (client == NULL)
     {
         ESP_LOGE(TAG, "Failed to initialise HTTP connection");
@@ -242,7 +229,6 @@ static void ota_example_task(void *pvParameter)
         task_fatal_error();
     }
     esp_http_client_fetch_headers(client);
-// end retransit section
 
     update_partition = esp_ota_get_next_update_partition(NULL);
     ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%x",
@@ -255,8 +241,9 @@ static void ota_example_task(void *pvParameter)
     //
 
     int j = 0;
-    int N = 144;
-    char *h0 = "hash of first chunk";
+    int N = 136;
+    unsigned char h0[] = {0xC6,0X6E,0X94,0XED,0X40,0XC1,0XEB,0XE8,0X67,0XA2,0XD4,0XA4,0X4C,0X21,0XD2,0XB4,0X00,0X08,0X56,0XDA,0X4E,0X93,0XFA,0XAD,0XFC,0X2D,0X5F,0X59,0X59,0X91,0XDD,0X38};
+    int filesize = 139200;
     while (1)
     {
         int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
@@ -277,121 +264,234 @@ static void ota_example_task(void *pvParameter)
             strncpy(Mac_calculate, ota_write_data + mac_calculate_offset, mac_calculate_length);
 
             char hmac[32];
+            unsigned char output[64] = {0};
+            char hash[32];
 
             hmac_256(ota_write_data, 772, hmac);
 
-            char hash[32];
             if (hmac == Mac_calculate)
             {
-                if ( (int)indexx == 0) {
+                //handling the right order of chunks
+                if ( (int)indexx == j && j == 0) {
                     //check if the hashes are equal
                     hash_256(ota_write_data, 772, hash);
                     
                     if (hash == h0){
                          //decrypt E0 with KSW
-                         //store ota_write_data in memory
+                         decrypt_symmetric((unsigned char *)Enc,IV,output);
+                         //write ota_write_data in memory
+                         if (image_header_was_checked == false)
+                         {
+                             esp_app_desc_t new_app_info;
+                             if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
+                             {
+                                 // check current version with downloading
+                                 memcpy(&new_app_info, &output[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
+                                 ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
 
-                    }else
+                                 esp_app_desc_t running_app_info;
+                                 if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
+                                 {
+                                     ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+                                 }
+
+                                 const esp_partition_t *last_invalid_app = esp_ota_get_last_invalid_partition();
+                                 esp_app_desc_t invalid_app_info;
+                                 if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
+                                 {
+                                     ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
+                                 }
+
+                                 // check current version with last invalid partition
+                                 if (last_invalid_app != NULL)
+                                 {
+                                     if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
+                                     {
+                                         ESP_LOGW(TAG, "New version is the same as invalid version.");
+                                         ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
+                                         ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
+                                         http_cleanup(client);
+                                         infinite_loop();
+                                     }
+                                 }
+#ifndef CONFIG_EXAMPLE_SKIP_VERSION_CHECK
+                                 if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0)
+                                 {
+                                     ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
+                                     http_cleanup(client);
+                                     infinite_loop();
+                                 }
+#endif
+
+                                 image_header_was_checked = true;
+
+                                 err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
+                                 if (err != ESP_OK)
+                                 {
+                                     ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
+                                     http_cleanup(client);
+                                     task_fatal_error();
+                                 }
+                                 ESP_LOGI(TAG, "esp_ota_begin succeeded");
+                             }
+                             else
+                             {
+                                 ESP_LOGE(TAG, "received package is not fit len");
+                                 http_cleanup(client);
+                                 task_fatal_error();
+                             }
+                         }
+                         err = esp_ota_write(update_handle, (const void *)output, data_read);
+                         if (err != ESP_OK)
+                         {
+                             http_cleanup(client);
+                             task_fatal_error();
+                         }
+                         binary_file_length += data_read;
+                         ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+                         j ++; 
+                    }
+                    //end of write data
+                    else
                     {
-                        //request retransmition of first chunk
-                        ESP_LOGI(TAG, "Request retransmition of first chunk");
+                        //request retransmition of the first chunk
+                        ESP_LOGI(TAG, "Request retransmition of first chunk on hash failure");
                         http_cleanup(client);
+                        //start retransit  section
+                        esp_http_client_handle_t client = esp_http_client_init(&config);
+
+                        //int Range = (indexx * 1024)- filesize;
+                        char ByteRange[20] = {0};
+                        sprintf(ByteRange, "bytes=%d-%d", (int)indexx * 1024, filesize);
+                        esp_http_client_set_header(client, "Range: ", (const char *)ByteRange);
+
+                        if (client == NULL)
+                        {
+                            ESP_LOGE(TAG, "Failed to initialise HTTP connection");
+                            task_fatal_error();
+                        }
+                        err = esp_http_client_open(client, 0);
+                        if (err != ESP_OK)
+                        {
+                            ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+                            esp_http_client_cleanup(client);
+                            task_fatal_error();
+                        }
+                        esp_http_client_fetch_headers(client);
+                        // end retransit section
                     }
                     
-                    memcpy(previous_Hash,Hash,252);
-                } 
-                else
+                    memcpy(previous_Hash, Hash, 252);
+                }
+                
+                else if ((int)indexx == j)
                 {
                     hash_256(ota_write_data, 772, hash);
                     if (hash == previous_Hash)
-                    { 
+                    {
                         //decrypt En with KSW
-                        //store ota_write_data in memory
-
-                        
-                    }else
-                    {
-                        //request retransmition of the related chunk
-                        ESP_LOGI(TAG, "Request retransmition of other chunks");
-                        http_cleanup(client);
-                    }
-                     memcpy(previous_Hash,Hash,252);
-                    
-                    
-                }
-                
-               
-
-                if (image_header_was_checked == false)
-                {
-                    esp_app_desc_t new_app_info;
-                    if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
-                    {
-                        // check current version with downloading
-                        memcpy(&new_app_info, &ota_write_data[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
-                        ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
-
-                        esp_app_desc_t running_app_info;
-                        if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
-                        {
-                            ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
-                        }
-
-                        const esp_partition_t *last_invalid_app = esp_ota_get_last_invalid_partition();
-                        esp_app_desc_t invalid_app_info;
-                        if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
-                        {
-                            ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
-                        }
-
-                        // check current version with last invalid partition
-                        if (last_invalid_app != NULL)
-                        {
-                            if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
-                            {
-                                ESP_LOGW(TAG, "New version is the same as invalid version.");
-                                ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
-                                ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
-                                http_cleanup(client);
-                                infinite_loop();
-                            }
-                        }
-#ifndef CONFIG_EXAMPLE_SKIP_VERSION_CHECK
-                        if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0)
-                        {
-                            ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
-                            http_cleanup(client);
-                            infinite_loop();
-                        }
-#endif
-
-                        image_header_was_checked = true;
-
-                        err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
-                        if (err != ESP_OK)
-                        {
-                            ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
-                            http_cleanup(client);
-                            task_fatal_error();
-                        }
-                        ESP_LOGI(TAG, "esp_ota_begin succeeded");
+                        decrypt_symmetric((unsigned char *)Enc, IV, output);
+                        //write ota_write_data in memory
+                        err = esp_ota_write(update_handle, (const void *)output, data_read);
+                         if (err != ESP_OK)
+                         {
+                             http_cleanup(client);
+                             task_fatal_error();
+                         }
+                         binary_file_length += data_read;
+                         ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+                         j ++;
+                        //end of write
                     }
                     else
                     {
-                        ESP_LOGE(TAG, "received package is not fit len");
+                        //request retransmition of the related chunk
+                        ESP_LOGI(TAG, "Request retransmition of other chunk on hash failure");
                         http_cleanup(client);
+                        //start retransit  section
+                        esp_http_client_handle_t client = esp_http_client_init(&config);
+
+                        //int Range = (indexx * 1024)- filesize;
+                        char ByteRange[20] = {0};
+                        sprintf(ByteRange, "bytes=%d-%d", (int)indexx * 1024, filesize);
+                        esp_http_client_set_header(client, "Range: ", (const char *)ByteRange);
+
+                        if (client == NULL)
+                        {
+                            ESP_LOGE(TAG, "Failed to initialise HTTP connection");
+                            task_fatal_error();
+                        }
+                        err = esp_http_client_open(client, 0);
+                        if (err != ESP_OK)
+                        {
+                            ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+                            esp_http_client_cleanup(client);
+                            task_fatal_error();
+                        }
+                        esp_http_client_fetch_headers(client);
+                        // end retransit section
+                    }
+                    memcpy(previous_Hash, Hash, 252);
+                }
+                else
+                {
+                    //request retransmition of the related chunk
+                    ESP_LOGI(TAG, "Request retransmition of chunk on wrong index");
+                    http_cleanup(client);
+                    //start retransit  section
+                    esp_http_client_handle_t client = esp_http_client_init(&config);
+
+                    //int Range = (indexx * 1024)- filesize;
+                    char ByteRange[20] = {0};
+                    sprintf(ByteRange, "bytes=%d-%d", j * 1024, filesize);
+                    esp_http_client_set_header(client, "Range: ", (const char *)ByteRange);
+
+                    if (client == NULL)
+                    {
+                        ESP_LOGE(TAG, "Failed to initialise HTTP connection");
                         task_fatal_error();
                     }
+                    err = esp_http_client_open(client, 0);
+                    if (err != ESP_OK)
+                    {
+                        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+                        esp_http_client_cleanup(client);
+                        task_fatal_error();
+                    }
+                    esp_http_client_fetch_headers(client);
+                    // end retransit section
                 }
-                err = esp_ota_write(update_handle, (const void *)ota_write_data, data_read);
-                if (err != ESP_OK)
+                
+            }
+            else
+            {
+                //request retransmition of chunk on mac failure
+                ESP_LOGI(TAG, "Request retransmition of chunk on MAC failure");
+                http_cleanup(client);
+                //start retransit  section
+                esp_http_client_handle_t client = esp_http_client_init(&config);
+
+                //int Range = (indexx * 1024)- filesize;
+                char ByteRange[20] = {0};
+                sprintf(ByteRange, "bytes=%d-%d", (int)indexx * 1024, filesize);
+                esp_http_client_set_header(client, "Range: ", (const char *)ByteRange);
+
+                if (client == NULL)
                 {
-                    http_cleanup(client);
+                    ESP_LOGE(TAG, "Failed to initialise HTTP connection");
                     task_fatal_error();
                 }
-                binary_file_length += data_read;
-                ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+                err = esp_http_client_open(client, 0);
+                if (err != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+                    esp_http_client_cleanup(client);
+                    task_fatal_error();
+                }
+                esp_http_client_fetch_headers(client);
+                // end retransit section
             }
+
         }
         else if (data_read == 0)
         {
@@ -410,7 +510,7 @@ static void ota_example_task(void *pvParameter)
                 break;
             }
         }
-        j ++;
+  
         if (j > N)
         {
             ESP_LOGI(TAG, "All packets have been Mac verified");
@@ -482,7 +582,7 @@ void app_main(void)
 
     // TEST SECTION
     //char *IKSW = "secretKey";
-    char *payload = "Hello HMAC SHA 256!";
+    //char *payload = "Hello HMAC SHA 256!";
     //char output[32] = {0};
     //hmac_256(payload, 19, output);
 
