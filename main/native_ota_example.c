@@ -47,7 +47,7 @@ static char ota_write_data[BUFFSIZE + 1] = { 0 };
 //#define mac_calculate_offset 0
 //#define mac_calculate_length 992
 
-static char indexx[index_length] = {0};
+static char indexx[index_length] = {0xFF};
 static char Enc[enc_length] = {0};
 static char Hash[hash_length] = {0};
 static char Mac[mac_length] = {0};
@@ -110,7 +110,7 @@ static void hmac_256(const char *payload, int payloadLength, char *output)
     mbedtls_md_hmac_finish(&ctx, hmacResult);
     mbedtls_md_free(&ctx);
 
-    strncpy(output, (char *)hmacResult, 32);
+    memcpy(output, (char *)hmacResult, 32);
 
     ESP_LOG_BUFFER_HEX("HMAC_256", hmacResult, 32);
 
@@ -132,7 +132,7 @@ static void hash_256(const char *payload, int payloadLength, char *output)
     mbedtls_md_finish(&ctx, shaResult);
     mbedtls_md_free(&ctx);
 
-    strncpy(output, (char *)shaResult, 32);
+    memcpy(output, (char *)shaResult, 32);
 
     ESP_LOG_BUFFER_HEX("HASH_256", shaResult, 32);
   
@@ -249,39 +249,51 @@ static void ota_example_task(void *pvParameter)
             task_fatal_error();
         } else if (data_read > 0) {
             ESP_LOGI(TAG, "Read data is: %s", ota_write_data);
-            strncpy(indexx, ota_write_data + index_offset, index_length);
-            strncpy(Enc, ota_write_data + enc_offset, enc_length);
-            strncpy(Hash, ota_write_data + hash_offset, hash_length);
-            strncpy(Mac, ota_write_data + mac_offset, mac_length);
+            //strncpy(indexx, ota_write_data + index_offset, index_length);
+            memcpy(indexx, ota_write_data + index_offset, index_length);
+            memcpy(Enc, ota_write_data + enc_offset, enc_length);
+            memcpy(Hash, ota_write_data + hash_offset, hash_length);
+            memcpy(Mac, ota_write_data + mac_offset, mac_length);
             //strncpy(Mac_calculate, ota_write_data + mac_calculate_offset, mac_calculate_length);
 
-            char hmac[32];
+            char hmac[32]= {0};
             unsigned char output[956] = {0};
-            char hash[32];
+            char hash[33] = {0};
 
-            hmac_256(ota_write_data, 960, hmac);
-            ESP_LOGI(TAG, "hmac %s", hmac);
-            ESP_LOGI(TAG, "mac is %s", Mac);
-            ESP_LOG_BUFFER_HEX("index is", indexx, 4);
-            ESP_LOGI(TAG, "Enc is %s", Enc);
-            ESP_LOGI(TAG, "Hash is %s", Hash);
-            //int number = (int)strtol(indexx, NULL, 0);
+
             uint32_t IntIndex = (indexx[0] << 24) + (indexx[1] << 16) + (indexx[2] << 8) + indexx[3];
             ESP_LOGI(TAG, "index int is %d", IntIndex);
 
-            if (strcmp( hmac , Mac) == 0 )
+            if(IntIndex == 0){
+                hmac_256(ota_write_data, 960, hmac);
+
+            }else if (IntIndex != 0)
+            {
+                hmac_256(ota_write_data, 992, hmac);
+            }
+            
+
+            ESP_LOG_BUFFER_HEX("hmac is", hmac, 32);
+            ESP_LOG_BUFFER_HEX("mac is", Mac, 32);
+            ESP_LOG_BUFFER_HEX("index is", ota_write_data, 4);
+            ESP_LOG_BUFFER_HEX("Enc is", Enc, 64);
+            ESP_LOG_BUFFER_HEX("Hash is", Hash, 32);
+            //int number = (int)strtol(indexx, NULL, 0);
+            ESP_LOGI(TAG, "j value is %d", j);
+
+            if (memcmp( hmac , Mac,32) == 0 )
             {
                 ESP_LOGI(TAG, "MAC checking is passed");
                 //handling the right order of chunks
-                if ( IntIndex == j && j == 0) {
-                    ESP_LOGI(TAG, "Index checking passed");
+                if ( IntIndex == j && j == 0 ) {
+                    ESP_LOGI(TAG, "Index checking of first chunk passed");
                     //check if the hashes are equal
                     hash_256(ota_write_data, 960, hash);
                     ESP_LOG_BUFFER_HEX("calculate hash is", hash, 32);
                     ESP_LOG_BUFFER_HEX("hash of 0 is", h0, 32);
                     
-                    if (strcmp( hash , h0) == 0 ){
-                         ESP_LOGI(TAG, "hash checking is passed");
+                    if (memcmp( Hash , h0,32) == 0 ){
+                         ESP_LOGI(TAG, "Hash checking of first chunk is passed");
                          //decrypt E0 with KSW
                          decrypt_symmetric((unsigned char *)Enc,IV,output);
                          //write ota_write_data in memory
@@ -362,7 +374,37 @@ static void ota_example_task(void *pvParameter)
                        break;
                     }
                     
-                    memcpy(previous_Hash, Hash, 32);
+                    memcpy(previous_Hash, hash, 32);
+                }
+                else if (IntIndex == j)
+                {
+                    ESP_LOGI(TAG, "Index checking of other chunks is passed");
+                    hash_256(ota_write_data, 992, hash);
+                    ESP_LOG_BUFFER_HEX("calculate hash is", hash, 32);
+                    ESP_LOG_BUFFER_HEX("previous hash is", previous_Hash, 32);
+                    if (memcmp( Hash , previous_Hash,32 ) == 0)
+                    {
+                        ESP_LOGI(TAG, "Hash checking of other chunks is passed");
+                        //decrypt En with KSW
+                        decrypt_symmetric((unsigned char *)Enc, IV, output);
+                        //write ota_write_data in memory
+                        err = esp_ota_write(update_handle, (const void *)output, data_read);
+                        if (err != ESP_OK)
+                        {
+                            http_cleanup(client);
+                            task_fatal_error();
+                        }
+                        binary_file_length += data_read;
+                        ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+                        j++;
+                        //end of write
+                    }
+                    else
+                    {
+                        //request retransmition of the related chunk
+                        break;
+                    }
+                    memcpy(previous_Hash, hash, 32);
                 }
             }
             else if (data_read == 0)
@@ -382,6 +424,7 @@ static void ota_example_task(void *pvParameter)
                     break;
                 }
             }
+            
         }
     }
     ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
