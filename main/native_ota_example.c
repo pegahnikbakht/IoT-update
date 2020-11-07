@@ -28,7 +28,7 @@
 #include "esp_wifi.h"
 #endif
 
-#define BUFFSIZE 1024
+#define BUFFSIZE 1012
 #define HASH_LEN 32 /* SHA-256 digest length */
 
 static const char *TAG = "native_ota_example";
@@ -39,10 +39,10 @@ static char ota_write_data[BUFFSIZE + 1] = { 0 };
 #define index_offset 0
 #define index_length 4
 #define enc_offset 4
-#define enc_length 956
-#define hash_offset 960
+#define enc_length 944
+#define hash_offset 948
 #define hash_length 32
-#define mac_offset 992
+#define mac_offset 980
 #define mac_length 32
 //#define mac_calculate_offset 0
 //#define mac_calculate_length 992
@@ -140,21 +140,23 @@ static void hash_256(const char *payload, int payloadLength, char *output)
 }
 
 
-static void decrypt_symmetric(unsigned char *input, char *iv, unsigned char *output)
+static void decrypt_symmetric(unsigned char *input, char *iv, unsigned char *output, int len)
 {
     mbedtls_gcm_context aes;
     mbedtls_gcm_init( &aes );
     mbedtls_gcm_setkey( &aes, MBEDTLS_CIPHER_ID_AES , (const unsigned char*) KSW, strlen(KSW) * 8);
     mbedtls_gcm_starts(&aes, MBEDTLS_GCM_DECRYPT, (const unsigned char*)iv, strlen(iv), NULL, 0);
-    mbedtls_gcm_update(&aes,64,(const unsigned char*)input, output);
+    mbedtls_gcm_update(&aes,len,(const unsigned char*)input, output);
     mbedtls_gcm_free( &aes );
-    
-    for (int i = 0; i < 20; i++)
-    {
-        char str[3];
-        sprintf(str, "%c", (int)output[i]);
-        ESP_LOGI(TAG, "Decrypted value is: %s", str);
-    }
+
+    ESP_LOG_BUFFER_HEX("decrypt is", output, 16);
+   
+    //for (int i = 0; i < 20; i++)
+    //{
+    //    char str[3];
+    //    sprintf(str, "%c", (int)output[i]);
+        //ESP_LOGI(TAG, "Decrypted value is: %s", str);
+    //}
     //ESP_LOGI(TAG, "Decrypted data is: %02x", (int)output);
 }
 
@@ -236,9 +238,12 @@ static void ota_example_task(void *pvParameter)
     bool image_header_was_checked = false;
     
     int j = 0;
-    int N = 146;
-    const char h0[32] = {0x5B,0x4B,0x44,0x5F,0x71,0x8F,0xE6,0x01,0xC2,0xA1,0xED,0x96,0x92,0x24,0x86,0x57,0x46,0xDF,0x2C,0x28,0xA7,0x51,0x74,0x55,0xF3,0xDA,0x34,0xB4,0x58,0x6D,0x21,0xCA};
-    int filesize = 149128;
+    int N = 148;
+    const char h0[32] = {0x67,0xA3,0x2A,0xDA,0xAD,0xAA,0x5C,0x48,0x3C,0xF7,0x18,0x18,0xC5,0xDA,0x10,0x31,0xC8,0xF5,0x8D,0x9E,0x0E,0x83,0xFF,0xC2,0xA4,0xED,0xDB,0xA5,0x91,0x15,0xBB,0x84};
+    int filesize = 149264;
+    int lastlen = 432;
+    int overheadlen = BUFFSIZE - enc_length;
+    int lastEncSize = (filesize - ((N-1) * BUFFSIZE)- overheadlen);
     while (1) {
         int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
         
@@ -251,25 +256,33 @@ static void ota_example_task(void *pvParameter)
             ESP_LOGI(TAG, "Read data is: %s", ota_write_data);
             //strncpy(indexx, ota_write_data + index_offset, index_length);
             memcpy(indexx, ota_write_data + index_offset, index_length);
-            memcpy(Enc, ota_write_data + enc_offset, enc_length);
-            memcpy(Hash, ota_write_data + hash_offset, hash_length);
-            memcpy(Mac, ota_write_data + mac_offset, mac_length);
-            //strncpy(Mac_calculate, ota_write_data + mac_calculate_offset, mac_calculate_length);
-
-            char hmac[32]= {0};
-            unsigned char output[956] = {0};
-            char hash[33] = {0};
-
 
             uint32_t IntIndex = (indexx[0] << 24) + (indexx[1] << 16) + (indexx[2] << 8) + indexx[3];
             ESP_LOGI(TAG, "index int is %d", IntIndex);
+            
+            int enc_index_offset = 0;
+            if (IntIndex == (N - 1))
+            {
+                enc_index_offset = enc_length - lastEncSize;
+            }
+
+            memcpy(Enc, ota_write_data + enc_offset, enc_length-enc_index_offset);
+            memcpy(Hash, ota_write_data + hash_offset-enc_index_offset, hash_length);
+            memcpy(Mac, ota_write_data + mac_offset-enc_index_offset, mac_length);
+            //strncpy(Mac_calculate, ota_write_data + mac_calculate_offset, mac_calculate_length);
+
+            char hmac[32]= {0};
+            unsigned char output[944] = {0};
+            unsigned char outputlast[432] = {0};
+             
+            char hash[33] = {0};
 
             if(IntIndex == 0){
-                hmac_256(ota_write_data, 960, hmac);
+                hmac_256(ota_write_data, index_length + enc_length, hmac);
 
             }else if (IntIndex != 0)
             {
-                hmac_256(ota_write_data, 992, hmac);
+                hmac_256(ota_write_data, index_length + enc_length + hash_length - enc_index_offset, hmac);
             }
             
 
@@ -288,14 +301,14 @@ static void ota_example_task(void *pvParameter)
                 if ( IntIndex == j && j == 0 ) {
                     ESP_LOGI(TAG, "Index checking of first chunk passed");
                     //check if the hashes are equal
-                    hash_256(ota_write_data, 960, hash);
+                    hash_256(ota_write_data, index_length + enc_length - enc_index_offset, hash);
                     ESP_LOG_BUFFER_HEX("calculate hash is", hash, 32);
                     ESP_LOG_BUFFER_HEX("hash of 0 is", h0, 32);
                     
                     if (memcmp( Hash , h0,32) == 0 ){
                          ESP_LOGI(TAG, "Hash checking of first chunk is passed");
                          //decrypt E0 with KSW
-                         decrypt_symmetric((unsigned char *)Enc,IV,output);
+                         decrypt_symmetric((unsigned char *)Enc,IV,output,enc_length);
                          //write ota_write_data in memory
                          if (image_header_was_checked == false)
                          {
@@ -358,7 +371,7 @@ static void ota_example_task(void *pvParameter)
                                  task_fatal_error();
                              }
                          }
-                         err = esp_ota_write(update_handle, (const void *)output, data_read);
+                         err = esp_ota_write(update_handle, (const void *)output, enc_length);
                          if (err != ESP_OK)
                          {
                              http_cleanup(client);
@@ -378,17 +391,28 @@ static void ota_example_task(void *pvParameter)
                 }
                 else if (IntIndex == j)
                 {
+
                     ESP_LOGI(TAG, "Index checking of other chunks is passed");
-                    hash_256(ota_write_data, 992, hash);
+                    hash_256(ota_write_data, index_length + enc_length + hash_length - enc_index_offset, hash);
                     ESP_LOG_BUFFER_HEX("calculate hash is", hash, 32);
                     ESP_LOG_BUFFER_HEX("previous hash is", previous_Hash, 32);
+                    
                     if (memcmp( Hash , previous_Hash,32 ) == 0)
                     {
                         ESP_LOGI(TAG, "Hash checking of other chunks is passed");
                         //decrypt En with KSW
-                        decrypt_symmetric((unsigned char *)Enc, IV, output);
-                        //write ota_write_data in memory
-                        err = esp_ota_write(update_handle, (const void *)output, data_read);
+                        if (IntIndex == (N-1))
+                        {
+                            decrypt_symmetric((unsigned char *)Enc, IV, outputlast, lastlen);
+                            //write ota_write_data in memory
+                            err = esp_ota_write(update_handle, (const void *)outputlast, lastlen);
+                        }else
+                        {
+                            decrypt_symmetric((unsigned char *)Enc, IV, output, enc_length);
+                            //write ota_write_data in memory
+                            err = esp_ota_write(update_handle, (const void *)output, enc_length);
+                        }
+                        
                         if (err != ESP_OK)
                         {
                             http_cleanup(client);
@@ -424,10 +448,15 @@ static void ota_example_task(void *pvParameter)
                     break;
                 }
             }
-            
+
+            if (j > (N - 1) )
+            {
+                ESP_LOGI(TAG, "All packets have been received and verified");
+                break;
+            }
         }
     }
-    ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
+    ESP_LOGI(TAG, "Total Write binary encrypted data length: %d", binary_file_length);
     if (esp_http_client_is_complete_data_received(client) != true) {
         ESP_LOGE(TAG, "Error in receiving complete file");
         http_cleanup(client);
@@ -477,21 +506,6 @@ static bool diagnostic(void)
 void app_main(void)
 {
 
-    // TEST SECTION
-    //char *IKSW = "secretKey";
-    //char *payload = "Hello HMAC SHA 256!";
-    //char output[32] = {0};
-    //hmac_256(payload, 19, output);
-
-    //hash_256(payload, 19, output);
-    //unsigned char output[64] = {0};
-    //unsigned char input[] = {0xcd,0x3f,0xe2,0x36,0xad,0x00,0xa9,0xfa,0x30,0xbf,0x33,0x78,0xc4,0x12,0x07,0xb9,0xf7,0x10,0x04};
-    //decrypt_symmetric(input, IV, output);
-
-    //while(1);
-    // TEST SECTION
-
-    
     uint8_t sha_256[HASH_LEN] = { 0 };
     esp_partition_t partition;
 
