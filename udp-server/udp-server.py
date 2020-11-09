@@ -19,8 +19,8 @@ mreq = struct.pack('4sL', group, socket.INADDR_ANY)
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
 
-file_name='hello-world.bin'
-buf = 1024
+file_name='SecureFirmware.bin'
+buf = 1012
 #s.sendto(file_name,addr)
 
 f=open(file_name,"rb")
@@ -28,12 +28,13 @@ data = f.read(buf)
 
 # Receive/send loop
 while (data):
-    print (sys.stderr, '\nwaiting to receive message' )
-    data, address = sock.recvfrom(1024)
+    print ('\nwaiting to receive message' )
+    data2, address = sock.recvfrom(1024)
     
-    print (sys.stderr, 'received %s bytes from %s' % (len(data), address))
-    print (sys.stderr, data)
+    print ( 'received %s bytes from %s' % (len(data2), address))
+    print ( data2)
 
-    print (sys.stderr, 'sending data to', address) 
+    print ( 'sending data to', address) 
     sock.sendto(data, address)
+    print ('data size %d', len(data)) 
     data = f.read(buf)
