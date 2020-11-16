@@ -40,12 +40,18 @@
 
 #define BUFFSIZE 1012
 #define HASH_LEN 32 /* SHA-256 digest length */
-#define HOST_IP_ADDR "192.168.0.108"
+#define HOST_IP_ADDR "192.168.0.109"
 #define PORT 20001
 
-static const char *udp_payload = "Request from ESP32 ";
 
-static const char *TAG = "native_ota_example";
+#define MULTICAST_TTL 1
+
+#define MULTICAST_IPV4_ADDR "232.10.11.12"
+
+
+static const char *ack = "Receive done";
+
+static const char *TAG = "ESP32_1";
 /*an ota data write buffer ready to write to the flash*/
 static char ota_write_data[BUFFSIZE + 1] = { 0 };
 
@@ -175,6 +181,57 @@ static void decrypt_symmetric(unsigned char *input, char *iv, unsigned char *out
     //ESP_LOGI(TAG, "Decrypted data is: %02x", (int)output);
 }
 
+static int socket_add_ipv4_multicast_group(int sock, bool assign_source_if)
+{
+    struct ip_mreq imreq = { 0 };
+    struct in_addr iaddr = { 0 };
+    int err = 0;
+    // Configure source interface
+#if LISTEN_ALL_IF
+    imreq.imr_interface.s_addr = IPADDR_ANY;
+#else
+    esp_netif_ip_info_t ip_info = { 0 };
+    err = esp_netif_get_ip_info(get_example_netif(), &ip_info);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get IP address info. Error 0x%x", err);
+        goto err;
+    }
+    inet_addr_from_ip4addr(&iaddr, &ip_info.ip);
+#endif // LISTEN_ALL_IF
+    // Configure multicast address to listen to
+    err = inet_aton(MULTICAST_IPV4_ADDR, &imreq.imr_multiaddr.s_addr);
+    if (err != 1) {
+        ESP_LOGE(TAG, "Configured IPV4 multicast address '%s' is invalid.", MULTICAST_IPV4_ADDR);
+        // Errors in the return value have to be negative
+        err = -1;
+        goto err;
+    }
+    ESP_LOGI(TAG, "Configured IPV4 Multicast address %s", inet_ntoa(imreq.imr_multiaddr.s_addr));
+    if (!IP_MULTICAST(ntohl(imreq.imr_multiaddr.s_addr))) {
+        ESP_LOGW(TAG, "Configured IPV4 multicast address '%s' is not a valid multicast address. This will probably not work.", MULTICAST_IPV4_ADDR);
+    }
+
+    if (assign_source_if) {
+        // Assign the IPv4 multicast source interface, via its IP
+        // (only necessary if this socket is IPV4 only)
+        err = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &iaddr,
+                         sizeof(struct in_addr));
+        if (err < 0) {
+            ESP_LOGE(TAG, "Failed to set IP_MULTICAST_IF. Error %d", errno);
+            goto err;
+        }
+    }
+
+    err = setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                         &imreq, sizeof(struct ip_mreq));
+    if (err < 0) {
+        ESP_LOGE(TAG, "Failed to set IP_ADD_MEMBERSHIP. Error %d", errno);
+        goto err;
+    }
+
+ err:
+    return err;
+}
 
 static void infinite_loop(void)
 {
@@ -231,7 +288,7 @@ static void ota_example_task(void *pvParameter)
 #endif
 
     
-
+    //Unicast socket
     char host_ip[] = HOST_IP_ADDR;
     int addr_family = 0;
     int ip_protocol = 0;
@@ -250,6 +307,39 @@ static void ota_example_task(void *pvParameter)
         task_fatal_error();
     }
     ESP_LOGI(TAG, "Socket created, sending to %s:%d", HOST_IP_ADDR, PORT);
+    //Unicast socket 
+    
+    //Multicast socket
+    struct sockaddr_in saddr = { 0 };
+    int sockmulti = -1;
+    int errm = 0;
+
+    sockmulti = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sockmulti < 0) {
+        ESP_LOGE(TAG, "Failed to create socket. Error %d", errno);
+        task_fatal_error();
+    }
+    saddr.sin_family = PF_INET;
+    saddr.sin_port = htons(PORT);
+    saddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    errm = bind(sockmulti, (struct sockaddr *)&saddr, sizeof(struct sockaddr_in));
+    if (errm < 0) {
+        ESP_LOGE(TAG, "Failed to bind socket. Error %d", errno);
+        task_fatal_error();
+    }
+    uint8_t ttl = MULTICAST_TTL;
+    setsockopt(sockmulti, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(uint8_t));
+    if (errm < 0) {
+        ESP_LOGE(TAG, "Failed to set IP_MULTICAST_TTL. Error %d", errno);
+        task_fatal_error();
+        
+    }
+    errm = socket_add_ipv4_multicast_group(sockmulti, true);
+    if (errm < 0) {
+        task_fatal_error();
+    }
+    //Multicast socket
+
     //esp_http_client_handle_t client = esp_http_client_init(&config);
     //if (client == NULL) {
     //    ESP_LOGE(TAG, "Failed to initialise HTTP connection");
@@ -280,21 +370,50 @@ static void ota_example_task(void *pvParameter)
     int lastlen = 432;
     int overheadlen = BUFFSIZE - enc_length;
     int lastEncSize = (filesize - ((N-1) * BUFFSIZE)- overheadlen);
+
+
+
+    /* Payload maker */
+    const char udp_payload[] = {"ESP32_1: alive"};
+    /* Payload maker */
+
+    int erro = sendto(sock, udp_payload, strlen(udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (erro < 0)
+    {
+        ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
+    }
+    ESP_LOGI(TAG, "Message sent");
+
+    char data_respose[32] = { 0 };
+    struct sockaddr_in source_addr_uni; // Large enough for both IPv4 or IPv6
+    socklen_t socklenuni = sizeof(source_addr_uni);
+    int response = recvfrom(sock, data_respose, 32, 0, (struct sockaddr *)&source_addr_uni, &socklenuni);
+    const char exp_response[] = {"NewFirmware"};
+
+    if (response < 0)
+    {
+        ESP_LOGE(TAG, "recvfrom failed: errno %d", errno);
+        task_fatal_error();
+    }
+    // Data received
+    else
+    {
+        //ota_write_data[data_read] = 0; // Null-terminate whatever we received and treat like a string
+        ESP_LOGI(TAG, "Received %d bytes from %s:", response, host_ip);
+        if (memcmp(data_respose, exp_response, strlen(exp_response)) != 0)
+        {
+            sleep(20);
+        }
+    }
+
     while (1) {
         //int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
 
         //UDP read
-        int err = sendto(sock, udp_payload, strlen(udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-        if (err < 0)
-        {
-            ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
-            break;
-        }
-        ESP_LOGI(TAG, "Message sent");
 
         struct sockaddr_in source_addr; // Large enough for both IPv4 or IPv6
         socklen_t socklen = sizeof(source_addr);
-        int data_read = recvfrom(sock, ota_write_data, BUFFSIZE , 0, (struct sockaddr *)&source_addr, &socklen);
+        int data_read = recvfrom(sockmulti, ota_write_data, BUFFSIZE , 0, (struct sockaddr *)&source_addr, &socklen);
 
         // Error occurred during receiving
         if (data_read < 0)
@@ -307,9 +426,16 @@ static void ota_example_task(void *pvParameter)
         {
             //ota_write_data[data_read] = 0; // Null-terminate whatever we received and treat like a string
             ESP_LOGI(TAG, "Received %d bytes from %s:", data_read, host_ip);
-            ESP_LOG_BUFFER_HEX(TAG,ota_write_data,BUFFSIZE);
+            //ESP_LOG_BUFFER_HEX(TAG,ota_write_data,BUFFSIZE);
            
         }
+        int err = sendto(sock, ack, strlen(ack), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+        if (err < 0)
+        {
+            ESP_LOGE(TAG, "Error occurred during sending ack: errno %d", errno);
+            break;
+        }
+
         //end udp read
         if (data_read < 0) {
             ESP_LOGE(TAG, "Error: SSL data read error");
@@ -446,8 +572,16 @@ static void ota_example_task(void *pvParameter)
                     }
                     //end of write data
                     else
-                    {
-                       break;
+                    {     
+                       char retransmit_udp_payload[20] = {0};
+                       sprintf(retransmit_udp_payload,"ESP32_1: ret %d",j);
+                       sleep(45);
+                       erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+                       if (erro < 0)
+                       {
+                           ESP_LOGE(TAG, "Error occurred during retrasmit: errno %d", errno);
+                       }
+                       ESP_LOGI(TAG, "retransmit sent");
                     }
                     
                     memcpy(previous_Hash, hash, 32);
@@ -489,7 +623,15 @@ static void ota_example_task(void *pvParameter)
                     else
                     {
                         //request retransmition of the related chunk
-                        break;
+                       char retransmit_udp_payload[20] = {0};
+                       sprintf(retransmit_udp_payload,"ESP32_1: ret%d",j);
+                       sleep(45);
+                       erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+                       if (erro < 0)
+                       {
+                           ESP_LOGE(TAG, "Error occurred during retrasmit: errno %d", errno);
+                       }
+                       ESP_LOGI(TAG, "retransmit sent");
                     }
                     memcpy(previous_Hash, hash, 32);
                 }
