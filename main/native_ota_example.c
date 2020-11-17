@@ -40,7 +40,7 @@
 
 #define BUFFSIZE 1012
 #define HASH_LEN 32 /* SHA-256 digest length */
-#define HOST_IP_ADDR "192.168.0.109"
+#define HOST_IP_ADDR "192.168.1.42"
 #define PORT 20001
 
 
@@ -51,7 +51,7 @@
 
 static const char *ack = "Receive done";
 
-static const char *TAG = "ESP32_1";
+static const char *TAG = "ESP32_2";
 /*an ota data write buffer ready to write to the flash*/
 static char ota_write_data[BUFFSIZE + 1] = { 0 };
 
@@ -371,11 +371,11 @@ static void ota_example_task(void *pvParameter)
     int overheadlen = BUFFSIZE - enc_length;
     int lastEncSize = (filesize - ((N-1) * BUFFSIZE)- overheadlen);
 
-
-
     /* Payload maker */
-    const char udp_payload[] = {"ESP32_1: alive"};
+    const char udp_payload[] = {"ESP32_2: alive"};
     /* Payload maker */
+
+    struct timeval tv_now;
 
     int erro = sendto(sock, udp_payload, strlen(udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (erro < 0)
@@ -388,6 +388,12 @@ static void ota_example_task(void *pvParameter)
     struct sockaddr_in source_addr_uni; // Large enough for both IPv4 or IPv6
     socklen_t socklenuni = sizeof(source_addr_uni);
     int response = recvfrom(sock, data_respose, 32, 0, (struct sockaddr *)&source_addr_uni, &socklenuni);
+    
+    gettimeofday(&tv_now, NULL);
+    int64_t time1 = (int64_t)tv_now.tv_sec * 1000000L + (int64_t)tv_now.tv_usec;
+    ESP_LOGI(TAG, "The current time is: %lld", time1);
+    
+
     const char exp_response[] = {"NewFirmware"};
 
     if (response < 0)
@@ -398,7 +404,6 @@ static void ota_example_task(void *pvParameter)
     // Data received
     else
     {
-        //ota_write_data[data_read] = 0; // Null-terminate whatever we received and treat like a string
         ESP_LOGI(TAG, "Received %d bytes from %s:", response, host_ip);
         if (memcmp(data_respose, exp_response, strlen(exp_response)) != 0)
         {
@@ -408,12 +413,30 @@ static void ota_example_task(void *pvParameter)
 
     while (1) {
         //int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
-
         //UDP read
 
-        struct sockaddr_in source_addr; // Large enough for both IPv4 or IPv6
+        struct sockaddr_in source_addr; //Large enough for both IPv4 or IPv6
         socklen_t socklen = sizeof(source_addr);
         int data_read = recvfrom(sockmulti, ota_write_data, BUFFSIZE , 0, (struct sockaddr *)&source_addr, &socklen);
+
+        gettimeofday(&tv_now, NULL);
+        int64_t time2 = (int64_t)tv_now.tv_sec * 1000000L + (int64_t)tv_now.tv_usec;
+        ESP_LOGI(TAG, "The current time is: %lld", time2);
+
+        if ( (time2-time1) > 250000 )
+        {
+            ESP_LOGI(TAG, "DoS protection enabled.");
+            char retransmit_udp_payload[20] = {0};
+            sprintf(retransmit_udp_payload, "ESP32_2: ret%d", j);
+            sleep(45);
+            erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+            if (erro < 0)
+            {
+                ESP_LOGE(TAG, "Error occurred during retrasmit: errno %d", errno);
+            }
+            ESP_LOGI(TAG, "retransmit sent");
+        }
+        time1 = time2;
 
         // Error occurred during receiving
         if (data_read < 0)
@@ -574,7 +597,7 @@ static void ota_example_task(void *pvParameter)
                     else
                     {     
                        char retransmit_udp_payload[20] = {0};
-                       sprintf(retransmit_udp_payload,"ESP32_1: ret %d",j);
+                       sprintf(retransmit_udp_payload,"ESP32_2: ret %d",j);
                        sleep(45);
                        erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
                        if (erro < 0)
@@ -622,9 +645,9 @@ static void ota_example_task(void *pvParameter)
                     }
                     else
                     {
-                        //request retransmition of the related chunk
+                       //request retransmition of the related chunk
                        char retransmit_udp_payload[20] = {0};
-                       sprintf(retransmit_udp_payload,"ESP32_1: ret%d",j);
+                       sprintf(retransmit_udp_payload,"ESP32_2: ret%d",j);
                        sleep(45);
                        erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
                        if (erro < 0)
