@@ -23,6 +23,8 @@
 #include "errno.h"
 #include "mbedtls/md.h"
 #include "mbedtls/gcm.h"
+#include "driver/uart.h"
+#include "driver/gpio.h"
 
 #include <sys/param.h>
 #include "freertos/event_groups.h"
@@ -40,7 +42,7 @@
 
 #define BUFFSIZE 1012
 #define HASH_LEN 32 /* SHA-256 digest length */
-#define HOST_IP_ADDR "192.168.1.42"
+#define HOST_IP_ADDR "192.168.0.108"
 #define PORT 20001
 
 
@@ -49,9 +51,12 @@
 #define MULTICAST_IPV4_ADDR "232.10.11.12"
 
 
+const char ant_ota[]				= "OTA start\n";
+const char ant_ota_done[]			= "OTA done\n";
+
 static const char *ack = "Receive done";
 
-static const char *TAG = "ESP32_2";
+static const char *TAG = "ESP32_3";
 /*an ota data write buffer ready to write to the flash*/
 static char ota_write_data[BUFFSIZE + 1] = { 0 };
 
@@ -64,8 +69,6 @@ static char ota_write_data[BUFFSIZE + 1] = { 0 };
 #define hash_length 32
 #define mac_offset 980
 #define mac_length 32
-//#define mac_calculate_offset 0
-//#define mac_calculate_length 992
 
 static char indexx[index_length] = {0xFF};
 static char Enc[enc_length] = {0};
@@ -80,20 +83,12 @@ char *KSW = "uaRNrZKutHtZoplz";
 char *IV = "s0fGiJWHN5FLmdd9";
 
 
-
-
 extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
 #define OTA_URL_SIZE 256
 
-/*
-static void http_cleanup(esp_http_client_handle_t client)
-{
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-}
-*/
+
 static void __attribute__((noreturn)) task_fatal_error(void)
 {
     ESP_LOGE(TAG, "Exiting task due to fatal error...");
@@ -133,7 +128,7 @@ static void hmac_256(const char *payload, int payloadLength, char *output)
 
     memcpy(output, (char *)hmacResult, 32);
 
-    ESP_LOG_BUFFER_HEX("HMAC_256", hmacResult, 32);
+    //ESP_LOG_BUFFER_HEX("HMAC_256", hmacResult, 32);
 
 }
 
@@ -155,9 +150,8 @@ static void hash_256(const char *payload, int payloadLength, char *output)
 
     memcpy(output, (char *)shaResult, 32);
 
-    ESP_LOG_BUFFER_HEX("HASH_256", shaResult, 32);
+    //ESP_LOG_BUFFER_HEX("HASH_256", shaResult, 32);
   
-
 }
 
 
@@ -170,16 +164,61 @@ static void decrypt_symmetric(unsigned char *input, char *iv, unsigned char *out
     mbedtls_gcm_update(&aes,len,(const unsigned char*)input, output);
     mbedtls_gcm_free( &aes );
 
-    ESP_LOG_BUFFER_HEX("decrypt is", output, 16);
+    //ESP_LOG_BUFFER_HEX("decrypt is", output, 16);
    
-    //for (int i = 0; i < 20; i++)
-    //{
-    //    char str[3];
-    //    sprintf(str, "%c", (int)output[i]);
-        //ESP_LOGI(TAG, "Decrypted value is: %s", str);
-    //}
-    //ESP_LOGI(TAG, "Decrypted data is: %02x", (int)output);
 }
+
+
+void uart_init()
+{
+	uart_config_t uart_config = {
+		.baud_rate = 115200,
+		.data_bits = UART_DATA_8_BITS,
+		.parity = UART_PARITY_DISABLE,
+		.stop_bits = UART_STOP_BITS_1,
+		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+	};
+	// Configure UART parameters
+	ESP_ERROR_CHECK(uart_param_config(UART_NUM_0, &uart_config));
+	ESP_ERROR_CHECK(uart_set_pin(UART_NUM_0, 1, 3, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+	ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
+
+	gpio_config_t io_conf = {
+		.pin_bit_mask	= (1ULL << 4),
+		.mode			= GPIO_MODE_OUTPUT,
+		.pull_up_en		= 0,
+		.pull_down_en	= 1,
+		.intr_type		= GPIO_PIN_INTR_DISABLE
+	};
+
+	gpio_config(&io_conf);
+}
+
+void uart_send(const char *data, size_t len)
+{
+#ifdef CONFIG_SQ_UART_DBG
+	ESP_LOGI(TAG, "[%s] - Sending %d bytes of data: %s", __FUNCTION__, len, data);
+#endif
+
+	/* Turn on output switch for Otii, and transmit an array of bytes for annotation.
+	 * Wait until TX buffer is empty, preventing bogus data to be sent.
+	 */
+	ESP_ERROR_CHECK(uart_wait_tx_done(UART_NUM_0, 1000));
+	gpio_set_level(4, 1);
+	int res = uart_write_bytes(UART_NUM_0, data, len);
+	/* Again, wait until finished before turning off the output. */
+	ESP_ERROR_CHECK(uart_wait_tx_done(UART_NUM_0, 1000));
+	gpio_set_level(4, 0);
+
+#ifdef CONFIG_SQ_UART_DBG
+	if (res >= 0) {
+		ESP_LOGI(TAG, "[%s] - Sent %d bytes of data", __FUNCTION__, res);
+	} else {
+		ESP_LOGI(TAG, "[%s] - Parameter error", __FUNCTION__);
+	}
+#endif
+}
+
 
 static int socket_add_ipv4_multicast_group(int sock, bool assign_source_if)
 {
@@ -245,6 +284,7 @@ static void infinite_loop(void)
 
 static void ota_example_task(void *pvParameter)
 {
+    uart_init();
     esp_err_t err;
     /* update handle : set by esp_ota_begin(), must be freed via esp_ota_end() */
     esp_ota_handle_t update_handle = 0 ;
@@ -306,7 +346,7 @@ static void ota_example_task(void *pvParameter)
         ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
         task_fatal_error();
     }
-    ESP_LOGI(TAG, "Socket created, sending to %s:%d", HOST_IP_ADDR, PORT);
+    //ESP_LOGI(TAG, "Socket created, sending to %s:%d", HOST_IP_ADDR, PORT);
     //Unicast socket 
     
     //Multicast socket
@@ -355,8 +395,8 @@ static void ota_example_task(void *pvParameter)
         
 
     update_partition = esp_ota_get_next_update_partition(NULL);
-    ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%x",
-             update_partition->subtype, update_partition->address);
+    //ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%x",
+    //         update_partition->subtype, update_partition->address);
     assert(update_partition != NULL);
 
     int binary_file_length = 0;
@@ -372,7 +412,7 @@ static void ota_example_task(void *pvParameter)
     int lastEncSize = (filesize - ((N-1) * BUFFSIZE)- overheadlen);
 
     /* Payload maker */
-    const char udp_payload[] = {"ESP32_2: alive"};
+    const char udp_payload[] = {"ESP32_3: alive"};
     /* Payload maker */
 
     struct timeval tv_now;
@@ -382,7 +422,7 @@ static void ota_example_task(void *pvParameter)
     {
         ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
     }
-    ESP_LOGI(TAG, "Message sent");
+    //ESP_LOGI(TAG, "Message sent");
 
     char data_respose[32] = { 0 };
     struct sockaddr_in source_addr_uni; // Large enough for both IPv4 or IPv6
@@ -391,7 +431,7 @@ static void ota_example_task(void *pvParameter)
     
     gettimeofday(&tv_now, NULL);
     int64_t time1 = (int64_t)tv_now.tv_sec * 1000000L + (int64_t)tv_now.tv_usec;
-    ESP_LOGI(TAG, "The current time is: %lld", time1);
+    //ESP_LOGI(TAG, "The current time is: %lld", time1);
     
 
     const char exp_response[] = {"NewFirmware"};
@@ -404,13 +444,13 @@ static void ota_example_task(void *pvParameter)
     // Data received
     else
     {
-        ESP_LOGI(TAG, "Received %d bytes from %s:", response, host_ip);
+        //ESP_LOGI(TAG, "Received %d bytes from %s:", response, host_ip);
         if (memcmp(data_respose, exp_response, strlen(exp_response)) != 0)
         {
             sleep(20);
         }
     }
-
+    uart_send(ant_ota, sizeof(ant_ota));
     while (1) {
         //int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
         //UDP read
@@ -421,20 +461,20 @@ static void ota_example_task(void *pvParameter)
 
         gettimeofday(&tv_now, NULL);
         int64_t time2 = (int64_t)tv_now.tv_sec * 1000000L + (int64_t)tv_now.tv_usec;
-        ESP_LOGI(TAG, "The current time is: %lld", time2);
+        //ESP_LOGI(TAG, "The current time is: %lld", time2);
 
         if ( (time2-time1) > 250000 )
         {
             ESP_LOGI(TAG, "DoS protection enabled.");
             char retransmit_udp_payload[20] = {0};
-            sprintf(retransmit_udp_payload, "ESP32_2: ret%d", j);
+            sprintf(retransmit_udp_payload, "ESP32_3: ret%d", j);
             sleep(45);
             erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
             if (erro < 0)
             {
                 ESP_LOGE(TAG, "Error occurred during retrasmit: errno %d", errno);
             }
-            ESP_LOGI(TAG, "retransmit sent");
+            //ESP_LOGI(TAG, "retransmit sent");
         }
         time1 = time2;
 
@@ -448,7 +488,7 @@ static void ota_example_task(void *pvParameter)
         else
         {
             //ota_write_data[data_read] = 0; // Null-terminate whatever we received and treat like a string
-            ESP_LOGI(TAG, "Received %d bytes from %s:", data_read, host_ip);
+            //ESP_LOGI(TAG, "Received %d bytes from %s:", data_read, host_ip);
             //ESP_LOG_BUFFER_HEX(TAG,ota_write_data,BUFFSIZE);
            
         }
@@ -465,12 +505,12 @@ static void ota_example_task(void *pvParameter)
             //http_cleanup(client);
             task_fatal_error();
         } else if (data_read > 0) {
-            ESP_LOGI(TAG, "Read data is: %s", ota_write_data);
+            //ESP_LOGI(TAG, "Read data is: %s", ota_write_data);
             //strncpy(indexx, ota_write_data + index_offset, index_length);
             memcpy(indexx, ota_write_data + index_offset, index_length);
 
             uint32_t IntIndex = (indexx[0] << 24) + (indexx[1] << 16) + (indexx[2] << 8) + indexx[3];
-            ESP_LOGI(TAG, "index int is %d", IntIndex);
+            //ESP_LOGI(TAG, "index int is %d", IntIndex);
             
             int enc_index_offset = 0;
             if (IntIndex == (N - 1))
@@ -504,21 +544,21 @@ static void ota_example_task(void *pvParameter)
             ESP_LOG_BUFFER_HEX("Enc is", Enc, 64);
             ESP_LOG_BUFFER_HEX("Hash is", Hash, 32);
             //int number = (int)strtol(indexx, NULL, 0);
-            ESP_LOGI(TAG, "j value is %d", j);
+            //ESP_LOGI(TAG, "j value is %d", j);
 
             if (memcmp( hmac , Mac,32) == 0 )
             {
-                ESP_LOGI(TAG, "MAC checking is passed");
+                //ESP_LOGI(TAG, "MAC checking is passed");
                 //handling the right order of chunks
                 if ( IntIndex == j && j == 0 ) {
-                    ESP_LOGI(TAG, "Index checking of first chunk passed");
+                    //ESP_LOGI(TAG, "Index checking of first chunk passed");
                     //check if the hashes are equal
                     hash_256(ota_write_data, index_length + enc_length - enc_index_offset, hash);
                     ESP_LOG_BUFFER_HEX("calculate hash is", hash, 32);
                     ESP_LOG_BUFFER_HEX("hash of 0 is", h0, 32);
                     
                     if (memcmp( Hash , h0,32) == 0 ){
-                         ESP_LOGI(TAG, "Hash checking of first chunk is passed");
+                         //ESP_LOGI(TAG, "Hash checking of first chunk is passed");
                          //decrypt E0 with KSW
                          decrypt_symmetric((unsigned char *)Enc,IV,output,enc_length);
                          //write ota_write_data in memory
@@ -597,7 +637,7 @@ static void ota_example_task(void *pvParameter)
                     else
                     {     
                        char retransmit_udp_payload[20] = {0};
-                       sprintf(retransmit_udp_payload,"ESP32_2: ret %d",j);
+                       sprintf(retransmit_udp_payload,"ESP32_3: ret %d",j);
                        sleep(45);
                        erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
                        if (erro < 0)
@@ -612,14 +652,14 @@ static void ota_example_task(void *pvParameter)
                 else if (IntIndex == j)
                 {
 
-                    ESP_LOGI(TAG, "Index checking of other chunks is passed");
+                    //ESP_LOGI(TAG, "Index checking of other chunks is passed");
                     hash_256(ota_write_data, index_length + enc_length + hash_length - enc_index_offset, hash);
                     ESP_LOG_BUFFER_HEX("calculate hash is", hash, 32);
                     ESP_LOG_BUFFER_HEX("previous hash is", previous_Hash, 32);
                     
                     if (memcmp( Hash , previous_Hash,32 ) == 0)
                     {
-                        ESP_LOGI(TAG, "Hash checking of other chunks is passed");
+                        //ESP_LOGI(TAG, "Hash checking of other chunks is passed");
                         //decrypt En with KSW
                         if (IntIndex == (N-1))
                         {
@@ -647,7 +687,7 @@ static void ota_example_task(void *pvParameter)
                     {
                        //request retransmition of the related chunk
                        char retransmit_udp_payload[20] = {0};
-                       sprintf(retransmit_udp_payload,"ESP32_2: ret%d",j);
+                       sprintf(retransmit_udp_payload,"ESP32_3: ret%d",j);
                        sleep(45);
                        erro = sendto(sock, retransmit_udp_payload, strlen(retransmit_udp_payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
                        if (erro < 0)
@@ -709,6 +749,7 @@ static void ota_example_task(void *pvParameter)
     }
     ESP_LOGI(TAG, "Prepare to restart system!");
     esp_restart();
+    uart_send(ant_ota_done, sizeof(ant_ota_done));
     return ;
 }
 
