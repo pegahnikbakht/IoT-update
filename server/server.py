@@ -306,9 +306,12 @@ def ReorderChunks(Chunks):
   return Chunks[::-1]
 
 def ComputeHashs(EncryptedFirmware):
-  Hashs = [Sha256( (0).to_bytes(4, byteorder='big') + EncryptedFirmware[0] )]
-  for ChunkIndex, Chunk in enumerate(EncryptedFirmware[1:],1):
-    Hashs.append( Sha256( (ChunkIndex).to_bytes(4, byteorder='big') + Chunk + Hashs[ ChunkIndex-1 ] ) )
+  LastIndex = len( EncryptedFirmware )
+  Hashs= [None] * LastIndex
+  Hashs[LastIndex - 1] = Sha256( (LastIndex - 1).to_bytes(4, byteorder='big') + EncryptedFirmware[-1] )
+  print("hii",LastIndex - 1,len(Hashs),len(EncryptedFirmware))
+  for Index in list(range(LastIndex - 2, -1, -1)):
+    Hashs[Index] = Sha256( (Index).to_bytes(4, byteorder='big') + EncryptedFirmware[Index] + Hashs[Index + 1] ) 
   return Hashs
 
 def MACI(IKSW, Index, EI, HASHIMINUS):
@@ -345,13 +348,16 @@ if __name__ == '__main__':
     ChunkHashs = ComputeHashs(EncryptFirmware)
 
 
-    ChunkMACS = [MACI(IKSW,0,EncryptFirmware[0],None)]
-    Packets = [(0).to_bytes(4, byteorder='big') + EncryptFirmware[0] + ChunkHashs[0] + ChunkMACS[0] ]
+    ChunkCount = len( EncryptFirmware )
+    ChunkMACS = [None] * ChunkCount
+    Packets = [None] * ChunkCount
 
-    for Index in range(1 , ChunkCount):
-        ChunkMACS.append(MACI(IKSW,Index,EncryptFirmware[Index],ChunkHashs[Index - 1]))
-        Packets.append((Index).to_bytes(4, byteorder='big') + EncryptFirmware[Index] + ChunkHashs[Index-1] + ChunkMACS[Index])
+    ChunkMACS[ChunkCount - 1] = MACI(IKSW,ChunkCount - 1,EncryptFirmware[ChunkCount - 1],None)
+    Packets[ChunkCount - 1] = (ChunkCount - 1).to_bytes(4, byteorder='big') + EncryptFirmware[ChunkCount - 1] + ChunkMACS[ChunkCount - 1]
 
+    for Index in list(range(ChunkCount - 2, -1, -1)):
+        ChunkMACS[Index] = MACI(IKSW, Index, EncryptFirmware[Index], ChunkHashs[Index + 1])
+        Packets[Index] = (Index).to_bytes(4, byteorder='big') + EncryptFirmware[Index] + ChunkHashs[Index +1] + ChunkMACS[Index]
 
     SecureFirmware = b''.join(Packets)
     SecureFirmwareFile = open("SecureFirmware.bin", "wb")
@@ -384,8 +390,7 @@ if __name__ == '__main__':
     print("Packet_length" , len(Packets[1]))
     print("last Packet_length" , len(Packets[-1]))
 
-    #print("FirstChunkHash", "{0x" + ChunkHashs[0].hex(' ', -1).upper().replace(' ',',0x') + "}")
-    print("FirstChunkHash", "{0x" + ChunkHashs[0].hex().upper().replace(' ',',0x') + "}")
+    print("FirstChunkHash", "{0x" + ChunkHashs[0].hex(' ', -1).upper().replace(' ',',0x') + "}")
     print("index_offset" , index_offset)
     print("index_length" , index_length)
     print("enc_offset" , enc_offset)
@@ -401,3 +406,4 @@ if __name__ == '__main__':
     ChoiceDevices()
     Verify()
     ChoiceRetransmitDevices()
+    
