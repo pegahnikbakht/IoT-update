@@ -105,8 +105,8 @@ def UpdateRoutine():
         Socket.sendto(datafile, (addrinfo[4][0], MYPORT))
         datafile = SecureFirmwareFile.read( ChunkSize )
         Progress.next( )
-        #time.sleep(3.2)
         time.sleep(0.08)
+        #time.sleep(0.08)
     print("\nUpdate Done!")
 
 
@@ -319,7 +319,7 @@ def MACI(IKSW, Index, EI, HASHIMINUS):
   if HASHIMINUS:
     c.update(bytes((Index).to_bytes(4, byteorder='big') + EI + HASHIMINUS))
   else:
-    #zero index
+    #last index
     c.update(bytes((Index).to_bytes(4, byteorder='big') + EI ))
   return c.digest()
 
@@ -333,7 +333,7 @@ def OpenFirmWare( FirmwareName ):
 if __name__ == '__main__':
     IKSW = b'gv4rrcQoL3PWZG8V'
     #128 bit AES key
-    KSW = b'uaRNrZKutHtZoplz'
+    KSW = b'uaRNrZKutHtZoplzuaRNrZKutHtZoplz'
     IV = b's0fGiJWHN5FLmdd9'
     ChunkSize = 944
     ChunkCount = 0
@@ -353,6 +353,8 @@ if __name__ == '__main__':
     Packets = [None] * ChunkCount
 
     ChunkMACS[ChunkCount - 1] = MACI(IKSW,ChunkCount - 1,EncryptFirmware[ChunkCount - 1],None)
+    print("lastmac", "{0x" + ChunkMACS[ChunkCount - 1] .hex().upper().replace(' ',',0x') + "}")
+    print("lastenc", "{0x" + EncryptFirmware[ChunkCount - 1].hex().upper().replace(' ',',0x') + "}")
     Packets[ChunkCount - 1] = (ChunkCount - 1).to_bytes(4, byteorder='big') + EncryptFirmware[ChunkCount - 1] + ChunkMACS[ChunkCount - 1]
 
     for Index in list(range(ChunkCount - 2, -1, -1)):
@@ -389,8 +391,9 @@ if __name__ == '__main__':
     print("ChunkCount", str(ChunkCount))
     print("Packet_length" , len(Packets[1]))
     print("last Packet_length" , len(Packets[-1]))
-
-    print("FirstChunkHash", "{0x" + ChunkHashs[0].hex(' ', -1).upper().replace(' ',',0x') + "}")
+    print("last chunk_length" , len(ChunkedFirmware[-1]))
+    #print("FirstChunkHash", "{0x" + ChunkHashs[0].hex(' ', -1).upper().replace(' ',',0x') + "}")
+    print("FirstChunkHash", "{0x" + ChunkHashs[0].hex().upper().replace(' ',',0x') + "}")
     print("index_offset" , index_offset)
     print("index_length" , index_length)
     print("enc_offset" , enc_offset)

@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/sg/esp/native_ota_example/build/CMakeFiles/bootloader
+/home/sg/esp/native_ota_example/build/CMakeFiles/bootloader.rule
+/home/sg/esp/native_ota_example/build/CMakeFiles/bootloader-complete.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/sg/esp/native_ota_example/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
